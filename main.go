@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"io/ioutil"
 	"encoding/json"
+	"github.com/boltdb/bolt"
 )
 
 type Device struct {
@@ -32,6 +33,10 @@ type MQTTData struct {
 	T1IndexMonth int
 	T1IndexYear int
 	T1Power int
+	T1Price float64
+	T1PriceDay float64
+	T1PriceMonth float64
+	T1PriceYear float64
 }
 
 func initConfig() () {
@@ -116,6 +121,47 @@ func initDevices(wg *sync.WaitGroup) {
 				}, wg)
 			}
 		}
+	}
+}
+
+func getDayIndex(device *Device, input string) (int, error) {
+	if (viper.GetString("db.path") == "") {
+		log.Fatal("please specify a db path in config");
+		os.Exit(1)
+	}
+	db, err := bolt.Open(viper.GetString("db.path"), 0600, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	tx, err := db.Begin(true)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.CreateBucketIfNotExists([]byte(device.Id + "-indexes"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(device.Id + "-indexes"))
+		v := b.Get([]byte(input + "-day"))
+		fmt.Printf("The answer is: %s\n", v)
+		return nil
+	})
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+}
+
+func buildMQTTData(device *Device, ecoDevicesData *EcoDevicesResponse) {
+	return &MQTTData{
+		T1Index: ecoDevicesData.T1Base,
+		T1IndexDay: getDayIndex(device, "t1"),
 	}
 }
 

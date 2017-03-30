@@ -1,0 +1,21 @@
+[[eco-devices]]
+id = "eco-devices-0"
+ip = "192.168.10.250"
+check-every = 10
+
+[db]
+path = "/path/to/db/file"
+
+[mqtt]
+uri = "http://192.168.10.133:8086"
+username = "test"
+password = "test"
+topic-level = "/home/devices"
+
+[electricity]
+mqtt-topic-level = "electricity"
+
+[electricity.price]
+mqtt-topic-level = "price"
+url = "https://comparateur.selectra.info/api/getAutoUpdateDatas?action=getDatas&neededClass[]=CAV_7_E1_price"
+check-every = 86400
