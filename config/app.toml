@@ -4,12 +4,10 @@ ip = "192.168.10.250"
 check-every = 10
 
 [db]
-path = "/path/to/db/file"
+path = "app.db"
 
 [mqtt]
-uri = "http://192.168.10.133:8086"
-username = "test"
-password = "test"
+uri = "192.168.10.252:1883"
 topic-level = "/home/devices"
 
 [electricity]
