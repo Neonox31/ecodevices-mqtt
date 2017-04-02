@@ -14,8 +14,8 @@ import (
 	"github.com/boltdb/bolt"
 	"errors"
 	"strconv"
-	"github.com/yosssi/gmq/mqtt"
-	"github.com/yosssi/gmq/mqtt/client"
+	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"regexp"
 )
 
 type Device struct {
@@ -25,27 +25,21 @@ type Device struct {
 }
 
 type EcoDevicesInput struct {
-	Id    string
-	Value int
+	Id             string
+	MQTTTopicLevel string
+	MQTTQoS        int
+	MQTTRetained   bool
+	PriceURL       string
+	Price          float64
 }
 
 type EcoDevicesResponse struct {
-	T1Base int `json:"T1_BASE"`
-	T1Papp int `json:"T1_PAPP"`
-	T2Base int `json:"T2_BASE"`
-	T2Papp int `json:"T2_PAPP"`
-}
-
-type MQTTData struct {
-	T1Index      int
-	T1IndexDay   int
-	T1IndexMonth int
-	T1IndexYear  int
-	T1Power      int
-	T1Price      float64
-	T1PriceDay   float64
-	T1PriceMonth float64
-	T1PriceYear  float64
+	T1Base  int `json:"T1_BASE"`
+	T1Papp  int `json:"T1_PAPP"`
+	T2Base  int `json:"T2_BASE"`
+	T2Papp  int `json:"T2_PAPP"`
+	C1Index int `json:"INDEX_C1"`
+	C2Index int `json:"INDEX_C2"`
 }
 
 func initConfig() () {
@@ -113,10 +107,15 @@ func saveIndex(device *Device, input string, index int) (error) {
 	return nil
 }
 
-func saveIndexes(device *Device, inputs []EcoDevicesInput) (error) {
+func saveIndexes(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse *EcoDevicesResponse) (error) {
 	for _, input := range inputs {
-		if (input.Value != 0) {
-			err := saveIndex(device, input.Id, input.Value)
+		value, err := getEcoDevicesIndexFromInput(input, ecoDevicesResponse)
+		if (err != nil) {
+			return err;
+		}
+
+		if (value != 0) {
+			err := saveIndex(device, input.Id, value)
 			if (err != nil) {
 				return err
 			}
@@ -167,54 +166,115 @@ func getIndexFromStartDate(device *Device, input string, startDate *time.Time) (
 	return dayIndex, nil
 }
 
-func getEcoDevicesDataRoutine(device *Device, wg *sync.WaitGroup) {
+func getEcoDevicesDataRoutine(device *Device, inputs []EcoDevicesInput, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for {
-		ecoDevicesResponse, ecoDevicesErr := getEcoDevicesData(device)
-		if (ecoDevicesErr != nil) {
-			log.Fatal(ecoDevicesErr);
-		}
-
-		fmt.Println(device.Id);
-
-		inputs := []EcoDevicesInput{
-			{
-				Id: "t1",
-				Value: ecoDevicesResponse.T1Base,
-			},
-			{
-				Id: "t2",
-				Value: ecoDevicesResponse.T2Base,
-			},
-		}
-
-		err := saveIndexes(device, inputs);
+		ecoDevicesResponse, err := getEcoDevicesData(device)
 		if (err != nil) {
-			log.Fatal(err)
+			fmt.Println(err)
 		}
 
-		data, err := buildMQTTData(device, ecoDevicesResponse)
+		err = saveIndexes(device, inputs, ecoDevicesResponse);
 		if (err != nil) {
-			log.Fatal(err)
+			fmt.Println(err)
 		}
 
-		err = sendMQTTData(device, data)
+		err = publishOnMQTT(device, inputs, ecoDevicesResponse)
 		if (err != nil) {
-			log.Fatal(err)
+			fmt.Println(err)
 		}
-
-		fmt.Println(data)
 
 		time.Sleep(time.Duration(device.CheckEvery) * time.Second)
 	}
 }
 
-func initDevices(wg *sync.WaitGroup) {
+func getEcoDevicesIndexFromInput(input EcoDevicesInput, ecoDevicesResponse *EcoDevicesResponse) (int, error) {
+	switch input.Id {
+	case "T1":
+		return ecoDevicesResponse.T1Base, nil
+	case "T2":
+		return ecoDevicesResponse.T2Base, nil
+	case "C1":
+		return ecoDevicesResponse.C1Index, nil
+	case "C2":
+		return ecoDevicesResponse.C2Index, nil
+	default:
+		return 0, errors.New("unrecognized input id")
+	}
+}
+
+func getPriceFromInput(input EcoDevicesInput) (float64, error) {
+	if (input.PriceURL != "") {
+		electricityPriceClient := http.Client{
+			Timeout: time.Second * 5,
+		}
+
+		req, err := http.NewRequest(http.MethodGet, input.PriceURL, nil)
+		if err != nil {
+			return 0.0, err
+		}
+
+		res, getErr := electricityPriceClient.Do(req)
+		if getErr != nil {
+			return 0.0, getErr
+		}
+
+		body, readErr := ioutil.ReadAll(res.Body)
+		if readErr != nil {
+			return 0.0, readErr
+		}
+
+		var re = regexp.MustCompile(`\d+\.\d*`)
+
+		for _, match := range re.FindAllString(string(body), -1) {
+			price, err := strconv.ParseFloat(match, 64)
+			if err != nil {
+				return 0.0, err
+			}
+			return price, nil
+		}
+	} else {
+		return input.Price, nil
+	}
+
+	return 0.0, nil
+}
+
+func getInputs() ([]EcoDevicesInput) {
+	inputs, err := viper.Get("inputs").([]interface{})
+
+	if (!err) {
+		log.Fatal("please specify at least one input in config");
+	} else {
+		retInputs := make([]EcoDevicesInput, len(inputs))
+		for index, table := range inputs {
+			if input, err := table.(map[string]interface{}); err {
+				if (cast.ToString(input["id"]) != "T1" && cast.ToString(input["id"]) != "T2" && cast.ToString(input["id"]) != "C1" && cast.ToString(input["id"]) != "C2") {
+					log.Fatal("please specify a valid id (T1, T2, C1 or C2) for input in config");
+				}
+				if (cast.ToString(input["mqtt-topic-level"]) == "") {
+					log.Fatal("please specify an mqtt-topic-level for '" + cast.ToString(input["id"]) + "'input in config");
+				}
+				retInputs[index] = EcoDevicesInput{
+					Id: cast.ToString(input["id"]),
+					MQTTTopicLevel: cast.ToString(input["mqtt-topic-level"]),
+					MQTTQoS: cast.ToInt(input["mqtt-qos"]),
+					MQTTRetained: cast.ToBool(input["mqtt-retained"]),
+					Price: cast.ToFloat64(input["price"]),
+					PriceURL: cast.ToString(input["price-url"]),
+				}
+			}
+		}
+		return retInputs
+	}
+	return nil
+}
+
+func initDevices(inputs []EcoDevicesInput, wg *sync.WaitGroup) {
 	devices, devicesErr := viper.Get("eco-devices").([]interface{})
 	if !devicesErr {
 		log.Fatal("please specify at least one eco-devices in config");
-		os.Exit(1)
 	} else {
 		wg.Add(len(devices))
 		for index, table := range devices {
@@ -225,7 +285,6 @@ func initDevices(wg *sync.WaitGroup) {
 
 				if (cast.ToString(device["ip"]) == "") {
 					log.Fatal("please specify an ip address for '" + cast.ToString(device["id"]) + "' device in config");
-					os.Exit(1)
 				}
 
 				if (cast.ToInt(device["check-every"]) == 0) {
@@ -236,74 +295,77 @@ func initDevices(wg *sync.WaitGroup) {
 					Id: cast.ToString(device["id"]),
 					Ip: cast.ToString(device["ip"]),
 					CheckEvery: cast.ToInt(device["check-every"]),
-				}, wg)
+				}, inputs, wg)
 			}
 		}
 	}
 }
 
-func buildMQTTData(device *Device, ecoDevicesData *EcoDevicesResponse) (*MQTTData, error) {
+func publishOnMQTT(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse *EcoDevicesResponse) (error) {
 	startOfDayDate := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Now().Location())
 	startOfMonthDate := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Now().Location())
 	startOfYearDate := time.Date(time.Now().Year(), 1, 1, 0, 0, 0, 0, time.Now().Location())
 
-	dayIndexT1, err := getIndexFromStartDate(device, "t1", &startOfDayDate)
-	if (err != nil) {
-		return nil, err
+	opts := MQTT.NewClientOptions()
+	opts.AddBroker(viper.GetString("mqtt.uri"))
+	opts.SetClientID(viper.GetString("mqtt.client-id"))
+
+	c := MQTT.NewClient(opts)
+	if token := c.Connect(); token.Wait() && token.Error() != nil {
+		return token.Error()
 	}
 
-	monthIndexT1, err := getIndexFromStartDate(device, "t1", &startOfMonthDate)
-	if (err != nil) {
-		return nil, err
+	for _, input := range inputs {
+		topicPrepend := viper.GetString("mqtt.topic-level") + "/" + device.Id + "/" + input.MQTTTopicLevel + "/"
+
+		currentIndex, _ := getEcoDevicesIndexFromInput(input, ecoDevicesResponse)
+		if (currentIndex != 0) {
+			token := c.Publish(topicPrepend + "index", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(currentIndex))
+			token.Wait()
+		}
+
+		currentPrice, _ := getPriceFromInput(input)
+		if (currentPrice > 0.0) {
+			token := c.Publish(topicPrepend + "price", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat(currentPrice, 'f', 3, 64))
+			token.Wait()
+		}
+
+		dayIndex, _ := getIndexFromStartDate(device, input.Id, &startOfDayDate)
+		if (dayIndex != 0) {
+			token := c.Publish(topicPrepend + "index/day", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(dayIndex))
+			token.Wait()
+
+			if (currentPrice > 0.0) {
+				token := c.Publish(topicPrepend + "price/day", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat((float64(dayIndex) / float64(1000)) * currentPrice, 'f', 2, 64))
+				token.Wait()
+			}
+		}
+
+		monthIndex, _ := getIndexFromStartDate(device, input.Id, &startOfMonthDate)
+		if (monthIndex != 0) {
+			token := c.Publish(topicPrepend + "index/month", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(monthIndex))
+			token.Wait()
+
+			if (currentPrice > 0.0) {
+				token := c.Publish(topicPrepend + "price/month", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat((float64(monthIndex) / float64(1000)) * currentPrice, 'f', 2, 64))
+				token.Wait()
+			}
+		}
+
+		yearIndex, _ := getIndexFromStartDate(device, input.Id, &startOfYearDate)
+		if (yearIndex != 0) {
+			token := c.Publish(topicPrepend + "index/year", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(yearIndex))
+			token.Wait()
+
+			if (currentPrice > 0.0) {
+				token := c.Publish(topicPrepend + "price/year", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat((float64(yearIndex) / float64(1000)) * currentPrice, 'f', 2, 64))
+				token.Wait()
+			}
+		}
+
 	}
 
-	yearIndexT1, err := getIndexFromStartDate(device, "t1", &startOfYearDate)
-	if (err != nil) {
-		return nil, err
-	}
-
-	return &MQTTData{
-		T1Index: ecoDevicesData.T1Base,
-		T1IndexDay: dayIndexT1,
-		T1IndexMonth: monthIndexT1,
-		T1IndexYear: yearIndexT1,
-		T1Power: ecoDevicesData.T1Papp,
-	}, nil
-}
-
-func sendMQTTData(device *Device, data *MQTTData) (error) {
-	// Create an MQTT Client.
-	cli := client.New(&client.Options{
-		// Define the processing of the error handler.
-		ErrorHandler: func(err error) {
-			fmt.Println(err)
-		},
-	})
-
-	// Terminate the Client.
-	defer cli.Terminate()
-
-	// Connect to the MQTT Server.
-	err := cli.Connect(&client.ConnectOptions{
-		Network:  "tcp",
-		Address:  viper.GetString("mqtt.uri"),
-		ClientID: []byte("eco-devices-2-mqtt"),
-	})
-
-	if err != nil {
-		return err
-	}
-
-	// Publish a message.
-	err = cli.Publish(&client.PublishOptions{
-		QoS:       mqtt.QoS0,
-		TopicName: []byte(viper.GetString("mqtt.topic-level") + "/" + device.Id + "/" + viper.GetString("electricity.topic-level") + "/1/index"),
-		Message:   []byte(strconv.Itoa(data.T1Index)),
-	})
-	if err != nil {
-		return err
-	}
-
+	c.Disconnect(250)
 	return nil
 }
 
@@ -311,7 +373,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	initConfig()
-	initDevices(&wg)
+	initDevices(getInputs(), &wg)
 
 	wg.Wait()
 }

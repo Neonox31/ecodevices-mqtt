@@ -7,13 +7,13 @@ check-every = 10
 path = "app.db"
 
 [mqtt]
-uri = "192.168.10.252:1883"
+uri = "tcp://192.168.10.252:1883"
+client-id = "eco-devices-2-mqtt"
 topic-level = "/home/devices"
 
-[electricity]
+[[inputs]]
+id = "T1"
 mqtt-topic-level = "electricity"
-
-[electricity.price]
-mqtt-topic-level = "price"
-url = "https://comparateur.selectra.info/api/getAutoUpdateDatas?action=getDatas&neededClass[]=CAV_7_E1_price"
-check-every = 86400
+mqtt-qos = 0
+mqtt-retained = false
+price-url = "https://comparateur.selectra.info/api/getAutoUpdateDatas?action=getDatas&neededClass[]=CAV_7_E1_price"
