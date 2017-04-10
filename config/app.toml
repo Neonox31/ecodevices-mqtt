@@ -1,7 +1,21 @@
-[[eco-devices]]
+[eco-devices]
 id = "eco-devices-0"
 ip = "192.168.10.250"
 check-every = 10
+
+[[eco-devices-measures]]
+json-key = "T1_BASE"
+mqtt-topic-level = "electricity/index"
+mqtt-qos = 0
+mqtt-retained = false
+index = true
+price-url = "https://comparateur.selectra.info/api/getAutoUpdateDatas?action=getDatas&neededClass[]=CAV_7_E1_price"
+
+[[eco-devices-measures]]
+json-key = "T1_PAPP"
+mqtt-topic-level = "electricity/power"
+mqtt-qos = 0
+mqtt-retained = false
 
 [db]
 path = "app.db"
@@ -11,9 +25,3 @@ uri = "tcp://192.168.10.252:1883"
 client-id = "eco-devices-2-mqtt"
 topic-level = "/home/devices"
 
-[[inputs]]
-id = "T1"
-mqtt-topic-level = "electricity"
-mqtt-qos = 0
-mqtt-retained = false
-price-url = "https://comparateur.selectra.info/api/getAutoUpdateDatas?action=getDatas&neededClass[]=CAV_7_E1_price"

@@ -18,17 +18,18 @@ import (
 	"regexp"
 )
 
-type Device struct {
+type EcoDevices struct {
 	Id         string
 	Ip         string
 	CheckEvery int
 }
 
-type EcoDevicesInput struct {
-	Id             string
+type EcoDevicesMeasure struct {
+	JsonKey        string
 	MQTTTopicLevel string
 	MQTTQoS        int
 	MQTTRetained   bool
+	Index          bool
 	PriceURL       string
 	Price          float64
 }
@@ -40,6 +41,11 @@ type EcoDevicesResponse struct {
 	T2Papp  int `json:"T2_PAPP"`
 	C1Index int `json:"INDEX_C1"`
 	C2Index int `json:"INDEX_C2"`
+}
+
+var allowedJSONKeys = map[string]bool{
+	"T1_BASE": true,
+	"T1_PAPP": true,
 }
 
 func initConfig() () {
@@ -241,64 +247,60 @@ func getPriceFromInput(input EcoDevicesInput) (float64, error) {
 	return 0.0, nil
 }
 
-func getInputs() ([]EcoDevicesInput) {
-	inputs, err := viper.Get("inputs").([]interface{})
+func getEcoDevicesMeasures() ([]EcoDevicesMeasure, error) {
+	configMeasures, err := viper.Get("eco-devices-measures").([]interface{})
 
-	if (!err) {
-		log.Fatal("please specify at least one input in config");
-	} else {
-		retInputs := make([]EcoDevicesInput, len(inputs))
-		for index, table := range inputs {
-			if input, err := table.(map[string]interface{}); err {
-				if (cast.ToString(input["id"]) != "T1" && cast.ToString(input["id"]) != "T2" && cast.ToString(input["id"]) != "C1" && cast.ToString(input["id"]) != "C2") {
-					log.Fatal("please specify a valid id (T1, T2, C1 or C2) for input in config");
-				}
-				if (cast.ToString(input["mqtt-topic-level"]) == "") {
-					log.Fatal("please specify an mqtt-topic-level for '" + cast.ToString(input["id"]) + "'input in config");
-				}
-				retInputs[index] = EcoDevicesInput{
-					Id: cast.ToString(input["id"]),
-					MQTTTopicLevel: cast.ToString(input["mqtt-topic-level"]),
-					MQTTQoS: cast.ToInt(input["mqtt-qos"]),
-					MQTTRetained: cast.ToBool(input["mqtt-retained"]),
-					Price: cast.ToFloat64(input["price"]),
-					PriceURL: cast.ToString(input["price-url"]),
-				}
+	if (err != nil) {
+		return nil, errors.New("please specify at least one eco-devices measure in config");
+	}
+	measures := make([]EcoDevicesMeasure, len(configMeasures))
+	for index, table := range measures {
+		if measure, err := table.(map[string]interface{}); err {
+			if (!allowedJSONKeys[cast.ToString(measure["json-key"])]) {
+				return nil, errors.New("please specify a valid json-key for eco-devices measure in config")
+			}
+
+			if (cast.ToString(measure["mqtt-topic-level"]) == "") {
+				return nil, errors.New("please specify an mqtt-topic-level for eco-devices measure in config");
+			}
+
+			measures[index] = EcoDevicesMeasure{
+				MQTTTopicLevel: cast.ToString(measure["mqtt-topic-level"]),
+				MQTTQoS: cast.ToInt(measure["mqtt-qos"]),
+				MQTTRetained: cast.ToBool(measure["mqtt-retained"]),
+				Index: cast.ToBool(measure["index"]),
+				Price: cast.ToFloat64(measure["price"]),
+				PriceURL: cast.ToString(measure["price-url"]),
 			}
 		}
-		return retInputs
 	}
-	return nil
+	return measures, nil
 }
 
-func initDevices(inputs []EcoDevicesInput, wg *sync.WaitGroup) {
-	devices, devicesErr := viper.Get("eco-devices").([]interface{})
-	if !devicesErr {
-		log.Fatal("please specify at least one eco-devices in config");
-	} else {
-		wg.Add(len(devices))
-		for index, table := range devices {
-			if device, deviceErr := table.(map[string]interface{}); deviceErr {
-				if (cast.ToString(device["id"]) == "") {
-					device["id"] = "eco-devices-" + cast.ToString(index)
-				}
-
-				if (cast.ToString(device["ip"]) == "") {
-					log.Fatal("please specify an ip address for '" + cast.ToString(device["id"]) + "' device in config");
-				}
-
-				if (cast.ToInt(device["check-every"]) == 0) {
-					device["check-every"] = 30
-				}
-
-				go getEcoDevicesDataRoutine(&Device{
-					Id: cast.ToString(device["id"]),
-					Ip: cast.ToString(device["ip"]),
-					CheckEvery: cast.ToInt(device["check-every"]),
-				}, inputs, wg)
-			}
-		}
+func getEcoDevices() (*EcoDevices, error) {
+	if (!viper.IsSet("ecodevices")) {
+		return nil, errors.New("Please define an eco-devices in config")
 	}
+
+	if (!viper.IsSet("ecodevices.ip")) {
+		return nil, errors.New("Please define an ip for eco-devices in config")
+	}
+
+	id := "eco-devices-0"
+	if (viper.IsSet("ecodevices.id")) {
+		id = viper.GetString("ecodevices.id")
+	}
+
+	checkEvery := 60
+	if (viper.IsSet("ecodevices.check-every")) {
+		checkEvery = viper.GetInt("ecodevices.check-every")
+	}
+
+	return &EcoDevices{
+		Id: id,
+		Ip: viper.GetString("ecodevices.ip"),
+		CheckEvery: checkEvery,
+	}, nil
 }
 
 func publishOnMQTT(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse *EcoDevicesResponse) (error) {
