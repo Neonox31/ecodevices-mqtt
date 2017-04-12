@@ -7,7 +7,6 @@ import (
 	"os"
 	"github.com/spf13/cast"
 	"time"
-	"sync"
 	"net/http"
 	"io/ioutil"
 	"encoding/json"
@@ -64,7 +63,7 @@ func initConfig() () {
 	}
 }
 
-func getEcoDevicesData(device *Device) (*EcoDevicesResponse, error) {
+func getEcoDevicesData(device *EcoDevices) (*EcoDevicesResponse, error) {
 	ecoDevicesClient := http.Client{
 		Timeout: time.Second * 20,
 	}
@@ -92,7 +91,7 @@ func getEcoDevicesData(device *Device) (*EcoDevicesResponse, error) {
 	return &ecoDevicesResponse, nil
 }
 
-func saveIndex(device *Device, input string, index int) (error) {
+func saveIndex(device *EcoDevices, jsonKey string, index int) (error) {
 	db, err := bolt.Open(viper.GetString("db.path"), 0600, nil)
 	if err != nil {
 		return err
@@ -100,7 +99,7 @@ func saveIndex(device *Device, input string, index int) (error) {
 	defer db.Close()
 
 	db.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(device.Id + "-" + input + "-indexes"))
+		b, err := tx.CreateBucketIfNotExists([]byte(device.Id + "-" + jsonKey + "-indexes"))
 		if (err != nil) {
 			return err
 		}
@@ -113,17 +112,19 @@ func saveIndex(device *Device, input string, index int) (error) {
 	return nil
 }
 
-func saveIndexes(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse *EcoDevicesResponse) (error) {
-	for _, input := range inputs {
-		value, err := getEcoDevicesIndexFromInput(input, ecoDevicesResponse)
-		if (err != nil) {
-			return err;
-		}
-
-		if (value != 0) {
-			err := saveIndex(device, input.Id, value)
+func saveIndexes(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesResponse *EcoDevicesResponse) (error) {
+	for _, measure := range measures {
+		if (measure.Index) {
+			value, err := getEcoDevicesValueFromJSONKey(measure.JsonKey, ecoDevicesResponse)
 			if (err != nil) {
-				return err
+				return err;
+			}
+
+			if (value != 0) {
+				err := saveIndex(device, measure.JsonKey, value)
+				if (err != nil) {
+					return err
+				}
 			}
 		}
 	}
@@ -131,9 +132,9 @@ func saveIndexes(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse *E
 	return nil
 }
 
-func getIndexFromStartDate(device *Device, input string, startDate *time.Time) (int, error) {
+func getIndexFromStartDate(device *EcoDevices, jsonKey string, startDate *time.Time) (int, error) {
 	var dayIndex int
-	bucketName := device.Id + "-" + input + "-indexes"
+	bucketName := device.Id + "-" + jsonKey + "-indexes"
 
 	db, err := bolt.Open(viper.GetString("db.path"), 0600, nil)
 	if err != nil {
@@ -172,21 +173,19 @@ func getIndexFromStartDate(device *Device, input string, startDate *time.Time) (
 	return dayIndex, nil
 }
 
-func getEcoDevicesDataRoutine(device *Device, inputs []EcoDevicesInput, wg *sync.WaitGroup) {
-	defer wg.Done()
-
+func getEcoDevicesDataRoutine(device *EcoDevices, measures []EcoDevicesMeasure) {
 	for {
 		ecoDevicesResponse, err := getEcoDevicesData(device)
 		if (err != nil) {
 			fmt.Println(err)
 		}
 
-		err = saveIndexes(device, inputs, ecoDevicesResponse);
+		err = saveIndexes(device, measures, ecoDevicesResponse);
 		if (err != nil) {
 			fmt.Println(err)
 		}
 
-		err = publishOnMQTT(device, inputs, ecoDevicesResponse)
+		err = publishOnMQTT(device, measures, ecoDevicesResponse)
 		if (err != nil) {
 			fmt.Println(err)
 		}
@@ -195,28 +194,32 @@ func getEcoDevicesDataRoutine(device *Device, inputs []EcoDevicesInput, wg *sync
 	}
 }
 
-func getEcoDevicesIndexFromInput(input EcoDevicesInput, ecoDevicesResponse *EcoDevicesResponse) (int, error) {
-	switch input.Id {
-	case "T1":
+func getEcoDevicesValueFromJSONKey(jsonKey string, ecoDevicesResponse *EcoDevicesResponse) (int, error) {
+	switch jsonKey {
+	case "T1_BASE":
 		return ecoDevicesResponse.T1Base, nil
-	case "T2":
+	case "T2_BASE":
 		return ecoDevicesResponse.T2Base, nil
-	case "C1":
+	case "T1_PAPP":
+		return ecoDevicesResponse.T1Papp, nil
+	case "T2_PAPP":
+		return ecoDevicesResponse.T2Papp, nil
+	case "INDEX_C1":
 		return ecoDevicesResponse.C1Index, nil
-	case "C2":
+	case "INDEX_C2":
 		return ecoDevicesResponse.C2Index, nil
 	default:
-		return 0, errors.New("unrecognized input id")
+		return 0, errors.New("unrecognized json key : " + jsonKey)
 	}
 }
 
-func getPriceFromInput(input EcoDevicesInput) (float64, error) {
-	if (input.PriceURL != "") {
+func getPriceFromMeasure(measure EcoDevicesMeasure) (float64, error) {
+	if (measure.PriceURL != "") {
 		electricityPriceClient := http.Client{
 			Timeout: time.Second * 5,
 		}
 
-		req, err := http.NewRequest(http.MethodGet, input.PriceURL, nil)
+		req, err := http.NewRequest(http.MethodGet, measure.PriceURL, nil)
 		if err != nil {
 			return 0.0, err
 		}
@@ -241,7 +244,7 @@ func getPriceFromInput(input EcoDevicesInput) (float64, error) {
 			return price, nil
 		}
 	} else {
-		return input.Price, nil
+		return measure.Price, nil
 	}
 
 	return 0.0, nil
@@ -250,11 +253,11 @@ func getPriceFromInput(input EcoDevicesInput) (float64, error) {
 func getEcoDevicesMeasures() ([]EcoDevicesMeasure, error) {
 	configMeasures, err := viper.Get("eco-devices-measures").([]interface{})
 
-	if (err != nil) {
+	if (!err) {
 		return nil, errors.New("please specify at least one eco-devices measure in config");
 	}
 	measures := make([]EcoDevicesMeasure, len(configMeasures))
-	for index, table := range measures {
+	for index, table := range configMeasures {
 		if measure, err := table.(map[string]interface{}); err {
 			if (!allowedJSONKeys[cast.ToString(measure["json-key"])]) {
 				return nil, errors.New("please specify a valid json-key for eco-devices measure in config")
@@ -278,32 +281,32 @@ func getEcoDevicesMeasures() ([]EcoDevicesMeasure, error) {
 }
 
 func getEcoDevices() (*EcoDevices, error) {
-	if (!viper.IsSet("ecodevices")) {
+	if (!viper.IsSet("eco-devices")) {
 		return nil, errors.New("Please define an eco-devices in config")
 	}
 
-	if (!viper.IsSet("ecodevices.ip")) {
+	if (!viper.IsSet("eco-devices.ip")) {
 		return nil, errors.New("Please define an ip for eco-devices in config")
 	}
 
 	id := "eco-devices-0"
-	if (viper.IsSet("ecodevices.id")) {
+	if (viper.IsSet("eco-devices.id")) {
 		id = viper.GetString("ecodevices.id")
 	}
 
 	checkEvery := 60
-	if (viper.IsSet("ecodevices.check-every")) {
+	if (viper.IsSet("eco-devices.check-every")) {
 		checkEvery = viper.GetInt("ecodevices.check-every")
 	}
 
 	return &EcoDevices{
 		Id: id,
-		Ip: viper.GetString("ecodevices.ip"),
+		Ip: viper.GetString("eco-devices.ip"),
 		CheckEvery: checkEvery,
 	}, nil
 }
 
-func publishOnMQTT(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse *EcoDevicesResponse) (error) {
+func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesResponse *EcoDevicesResponse) (error) {
 	startOfDayDate := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Now().Location())
 	startOfMonthDate := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Now().Location())
 	startOfYearDate := time.Date(time.Now().Year(), 1, 1, 0, 0, 0, 0, time.Now().Location())
@@ -317,54 +320,55 @@ func publishOnMQTT(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse 
 		return token.Error()
 	}
 
-	for _, input := range inputs {
-		topicPrepend := viper.GetString("mqtt.topic-level") + "/" + device.Id + "/" + input.MQTTTopicLevel + "/"
+	for _, measure := range measures {
+		topic := viper.GetString("mqtt.topic-level") + "/" + device.Id + "/" + measure.MQTTTopicLevel + "/"
 
-		currentIndex, _ := getEcoDevicesIndexFromInput(input, ecoDevicesResponse)
-		if (currentIndex != 0) {
-			token := c.Publish(topicPrepend + "index", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(currentIndex))
+		ecoDeviceValue, _ := getEcoDevicesValueFromJSONKey(measure.JsonKey, ecoDevicesResponse)
+		if (ecoDeviceValue != 0) {
+			token := c.Publish(topic, byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(ecoDeviceValue))
 			token.Wait()
 		}
 
-		currentPrice, _ := getPriceFromInput(input)
+		currentPrice, _ := getPriceFromMeasure(measure)
 		if (currentPrice > 0.0) {
-			token := c.Publish(topicPrepend + "price", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat(currentPrice, 'f', 3, 64))
+			token := c.Publish(topic + "/price", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat(currentPrice, 'f', 3, 64))
 			token.Wait()
 		}
 
-		dayIndex, _ := getIndexFromStartDate(device, input.Id, &startOfDayDate)
-		if (dayIndex != 0) {
-			token := c.Publish(topicPrepend + "index/day", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(dayIndex))
-			token.Wait()
-
-			if (currentPrice > 0.0) {
-				token := c.Publish(topicPrepend + "price/day", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat((float64(dayIndex) / float64(1000)) * currentPrice, 'f', 2, 64))
+		if (measure.Index) {
+			savedValue, _ := getIndexFromStartDate(device, measure.JsonKey, &startOfDayDate)
+			if (savedValue != 0) {
+				token := c.Publish(topic + "/day", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
 				token.Wait()
+
+				if (currentPrice > 0.0) {
+					token := c.Publish(topic + "/price/day", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64))
+					token.Wait()
+				}
+			}
+
+			savedValue, _ = getIndexFromStartDate(device, measure.JsonKey, &startOfMonthDate)
+			if (savedValue != 0) {
+				token := c.Publish(topic + "/month", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
+				token.Wait()
+
+				if (currentPrice > 0.0) {
+					token := c.Publish(topic + "/price/month", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64))
+					token.Wait()
+				}
+			}
+
+			savedValue, _ = getIndexFromStartDate(device, measure.JsonKey, &startOfYearDate)
+			if (savedValue != 0) {
+				token := c.Publish(topic + "/year", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
+				token.Wait()
+
+				if (currentPrice > 0.0) {
+					token := c.Publish(topic + "/price/year", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64))
+					token.Wait()
+				}
 			}
 		}
-
-		monthIndex, _ := getIndexFromStartDate(device, input.Id, &startOfMonthDate)
-		if (monthIndex != 0) {
-			token := c.Publish(topicPrepend + "index/month", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(monthIndex))
-			token.Wait()
-
-			if (currentPrice > 0.0) {
-				token := c.Publish(topicPrepend + "price/month", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat((float64(monthIndex) / float64(1000)) * currentPrice, 'f', 2, 64))
-				token.Wait()
-			}
-		}
-
-		yearIndex, _ := getIndexFromStartDate(device, input.Id, &startOfYearDate)
-		if (yearIndex != 0) {
-			token := c.Publish(topicPrepend + "index/year", byte(input.MQTTQoS), input.MQTTRetained, strconv.Itoa(yearIndex))
-			token.Wait()
-
-			if (currentPrice > 0.0) {
-				token := c.Publish(topicPrepend + "price/year", byte(input.MQTTQoS), input.MQTTRetained, strconv.FormatFloat((float64(yearIndex) / float64(1000)) * currentPrice, 'f', 2, 64))
-				token.Wait()
-			}
-		}
-
 	}
 
 	c.Disconnect(250)
@@ -372,10 +376,14 @@ func publishOnMQTT(device *Device, inputs []EcoDevicesInput, ecoDevicesResponse 
 }
 
 func main() {
-	var wg sync.WaitGroup
-
 	initConfig()
-	initDevices(getInputs(), &wg)
-
-	wg.Wait()
+	device, err := getEcoDevices()
+	if (err != nil) {
+		log.Fatal(err)
+	}
+	deviceMeasures, err := getEcoDevicesMeasures()
+	if (err != nil) {
+		log.Fatal(err)
+	}
+	getEcoDevicesDataRoutine(device, deviceMeasures)
 }
