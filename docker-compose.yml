@@ -6,4 +6,4 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /srv/docker/go-ecodevices-mqtt:/go/src/app
-    command: bash -c "go get giithub.com/neonox31/go-ecodevices-mqtt && exec go-ecodevices-mqtt"
+    command: bash -c "go get github.com/neonox31/go-ecodevices-mqtt && exec go-ecodevices-mqtt"
