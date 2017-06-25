@@ -1,6 +1,6 @@
 version: '2'
 services:
-  smarthome:
+  goapp:
     image: golang
     restart: always
     volumes:
