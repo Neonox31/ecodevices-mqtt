@@ -268,6 +268,7 @@ func getEcoDevicesMeasures() ([]EcoDevicesMeasure, error) {
 			}
 
 			measures[index] = EcoDevicesMeasure{
+				JsonKey: cast.ToString(measure["json-key"]),
 				MQTTTopicLevel: cast.ToString(measure["mqtt-topic-level"]),
 				MQTTQoS: cast.ToInt(measure["mqtt-qos"]),
 				MQTTRetained: cast.ToBool(measure["mqtt-retained"]),
@@ -291,12 +292,12 @@ func getEcoDevices() (*EcoDevices, error) {
 
 	id := "eco-devices-0"
 	if (viper.IsSet("eco-devices.id")) {
-		id = viper.GetString("ecodevices.id")
+		id = viper.GetString("eco-devices.id")
 	}
 
 	checkEvery := 60
 	if (viper.IsSet("eco-devices.check-every")) {
-		checkEvery = viper.GetInt("ecodevices.check-every")
+		checkEvery = viper.GetInt("eco-devices.check-every")
 	}
 
 	return &EcoDevices{
@@ -321,7 +322,7 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 	}
 
 	for _, measure := range measures {
-		topic := viper.GetString("mqtt.topic-level") + "/" + device.Id + "/" + measure.MQTTTopicLevel + "/"
+		topic := viper.GetString("mqtt.topic-level") + "/" + device.Id + "/" + measure.MQTTTopicLevel
 
 		ecoDeviceValue, _ := getEcoDevicesValueFromJSONKey(measure.JsonKey, ecoDevicesResponse)
 		if (ecoDeviceValue != 0) {
