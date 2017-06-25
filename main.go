@@ -15,7 +15,10 @@ import (
 	"strconv"
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"regexp"
+	"github.com/spf13/cobra"
 )
+
+const version = "0.1.0"
 
 type EcoDevices struct {
 	Id         string
@@ -47,9 +50,49 @@ var allowedJSONKeys = map[string]bool{
 	"T1_PAPP": true,
 }
 
+var RootCmd = &cobra.Command{
+	Use:   "go-ecodevices-mqtt",
+	Short: "Bind your GCE Ecodevices to MQTT",
+	Long: `Bind your GCE Ecodevices to MQTT`,
+	Run: func(cmd *cobra.Command, args []string) {
+		initConfig()
+		device, err := getEcoDevices()
+		if (err != nil) {
+			log.Fatal(err)
+		}
+		deviceMeasures, err := getEcoDevicesMeasures()
+		if (err != nil) {
+			log.Fatal(err)
+		}
+		getEcoDevicesDataRoutine(device, deviceMeasures)
+	},
+}
+
+var (
+	cfgFile string
+)
+
+func init() {
+	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file")
+
+	validConfigFilenames := []string{"json", "js", "yaml", "yml", "toml", "tml"}
+	_ = RootCmd.PersistentFlags().SetAnnotation("config", cobra.BashCompFilenameExt, validConfigFilenames)
+}
+
+func main() {
+	if err := RootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
 func initConfig() () {
-	viper.SetConfigName("app")
-	viper.AddConfigPath("config")
+	if (cfgFile) == "" {
+		log.Fatal("please specify a config file");
+		os.Exit(1)
+	}
+
+	viper.SetConfigFile(cfgFile)
 
 	err := viper.ReadInConfig()
 	if err != nil {
@@ -374,17 +417,4 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 
 	c.Disconnect(250)
 	return nil
-}
-
-func main() {
-	initConfig()
-	device, err := getEcoDevices()
-	if (err != nil) {
-		log.Fatal(err)
-	}
-	deviceMeasures, err := getEcoDevicesMeasures()
-	if (err != nil) {
-		log.Fatal(err)
-	}
-	getEcoDevicesDataRoutine(device, deviceMeasures)
 }
