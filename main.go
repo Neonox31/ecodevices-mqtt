@@ -1,10 +1,7 @@
 package main
 
 import (
-	"fmt"
 	"github.com/spf13/viper"
-	"log"
-	"os"
 	"github.com/spf13/cast"
 	"time"
 	"net/http"
@@ -16,6 +13,7 @@ import (
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"regexp"
 	"github.com/spf13/cobra"
+	"github.com/op/go-logging"
 )
 
 const version = "0.1.0"
@@ -60,16 +58,19 @@ var RootCmd = &cobra.Command{
 		if (err != nil) {
 			log.Fatal(err)
 		}
+		log.Debugf("new ecodevices added : %s", device)
 		deviceMeasures, err := getEcoDevicesMeasures()
 		if (err != nil) {
 			log.Fatal(err)
 		}
+		log.Debugf("defined measures for %s : %s", device.Id, deviceMeasures)
 		getEcoDevicesDataRoutine(device, deviceMeasures)
 	},
 }
 
 var (
 	cfgFile string
+	log        *logging.Logger
 )
 
 func init() {
@@ -81,28 +82,52 @@ func init() {
 
 func main() {
 	if err := RootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatal(err)
 	}
 }
 
 func initConfig() () {
 	if (cfgFile) == "" {
-		log.Fatal("please specify a config file");
-		os.Exit(1)
+		log.Fatal("please specify a config file")
 	}
 
 	viper.SetConfigFile(cfgFile)
 
 	err := viper.ReadInConfig()
 	if err != nil {
-		log.Fatal(err);
-		os.Exit(1)
+		log.Fatal(err)
 	}
 
 	if (viper.GetString("db.path") == "") {
-		log.Fatal("please specify a db path in config");
-		os.Exit(1)
+		log.Fatal("please specify a db path in config")
+	}
+
+	log = logging.MustGetLogger("ecodevices-mqtt")
+	format := logging.MustStringFormatter(
+		`%{color}%{time:2006-01-02T15:04:05.999Z-07:00} [%{level}] %{color:reset}%{message}`,
+	)
+	logging.SetFormatter(format)
+	switch viper.GetString("log.level") {
+	case "CRITICAL":
+		logging.SetLevel(logging.CRITICAL, "")
+		break
+	case "ERROR":
+		logging.SetLevel(logging.ERROR, "")
+		break
+	case "WARNING":
+		logging.SetLevel(logging.WARNING, "")
+		break
+	case "NOTICE":
+		logging.SetLevel(logging.NOTICE, "")
+		break
+	case "INFO":
+		logging.SetLevel(logging.INFO, "")
+		break
+	case "DEBUG":
+		logging.SetLevel(logging.DEBUG, "")
+		break
+	default:
+		logging.SetLevel(logging.NOTICE, "")
 	}
 }
 
@@ -141,6 +166,7 @@ func saveIndex(device *EcoDevices, jsonKey string, index int) (error) {
 	}
 	defer db.Close()
 
+	log.Debugf("saving current index (%d) in database for %s", index, device.Id)
 	db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(device.Id + "-" + jsonKey + "-indexes"))
 		if (err != nil) {
@@ -220,17 +246,18 @@ func getEcoDevicesDataRoutine(device *EcoDevices, measures []EcoDevicesMeasure) 
 	for {
 		ecoDevicesResponse, err := getEcoDevicesData(device)
 		if (err != nil) {
-			fmt.Println(err)
+			log.Error(err)
 		}
+		log.Debugf("json response for %s : %s", device.Id, ecoDevicesResponse)
 
 		err = saveIndexes(device, measures, ecoDevicesResponse);
 		if (err != nil) {
-			fmt.Println(err)
+			log.Error(err)
 		}
 
 		err = publishOnMQTT(device, measures, ecoDevicesResponse)
 		if (err != nil) {
-			fmt.Println(err)
+			log.Error(err)
 		}
 
 		time.Sleep(time.Duration(device.CheckEvery) * time.Second)
@@ -373,7 +400,11 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 			token.Wait()
 		}
 
-		currentPrice, _ := getPriceFromMeasure(measure)
+		currentPrice, errPrice := getPriceFromMeasure(measure)
+		if (errPrice != nil) {
+			log.Error(errPrice)
+		}
+
 		if (currentPrice > 0.0) {
 			token := c.Publish(topic + "/price", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat(currentPrice, 'f', 3, 64))
 			token.Wait()
@@ -381,6 +412,7 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 
 		if (measure.Index) {
 			savedValue, _ := getIndexFromStartDate(device, measure.JsonKey, &startOfDayDate)
+			log.Debugf("day index for %s is %d", device.Id, savedValue)
 			if (savedValue != 0) {
 				token := c.Publish(topic + "/day", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
 				token.Wait()
@@ -392,6 +424,7 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 			}
 
 			savedValue, _ = getIndexFromStartDate(device, measure.JsonKey, &startOfMonthDate)
+			log.Debugf("month index for %s is %d", device.Id, savedValue)
 			if (savedValue != 0) {
 				token := c.Publish(topic + "/month", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
 				token.Wait()
@@ -403,6 +436,7 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 			}
 
 			savedValue, _ = getIndexFromStartDate(device, measure.JsonKey, &startOfYearDate)
+			log.Debugf("year index for %s is %d", device.Id, savedValue)
 			if (savedValue != 0) {
 				token := c.Publish(topic + "/year", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
 				token.Wait()
