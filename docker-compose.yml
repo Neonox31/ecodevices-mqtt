@@ -2,6 +2,7 @@ version: '2'
 services:
   goapp:
     image: golang
+    container_name: ecodevices-mqtt
     restart: always
     volumes:
       - /etc/localtime:/etc/localtime:ro
