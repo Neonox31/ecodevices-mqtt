@@ -25,3 +25,5 @@ uri = "tcp://192.168.10.252:1883"
 client-id = "eco-devices-2-mqtt"
 topic-level = "home/devices"
 
+[log]
+level = "NOTICE"
