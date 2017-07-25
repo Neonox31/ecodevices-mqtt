@@ -396,6 +396,7 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 
 		ecoDeviceValue, _ := getEcoDevicesValueFromJSONKey(measure.JsonKey, ecoDevicesResponse)
 		if (ecoDeviceValue != 0) {
+			log.Debugf("publish %s on %s", strconv.Itoa(ecoDeviceValue), topic)
 			token := c.Publish(topic, byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(ecoDeviceValue))
 			token.Wait()
 		}
@@ -406,6 +407,7 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 		}
 
 		if (currentPrice > 0.0) {
+			log.Debugf("publish %s on %s", strconv.FormatFloat(currentPrice, 'f', 3, 64), topic + "/price")
 			token := c.Publish(topic + "/price", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat(currentPrice, 'f', 3, 64))
 			token.Wait()
 		}
@@ -414,10 +416,12 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 			savedValue, _ := getIndexFromStartDate(device, measure.JsonKey, &startOfDayDate)
 			log.Debugf("day index for %s is %d", device.Id, savedValue)
 			if (savedValue != 0) {
+				log.Debugf("publish %s on %s", strconv.Itoa(savedValue), topic + "/day")
 				token := c.Publish(topic + "/day", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
 				token.Wait()
 
 				if (currentPrice > 0.0) {
+					log.Debugf("publish %s on %s", strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64), topic + "/price/day")
 					token := c.Publish(topic + "/price/day", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64))
 					token.Wait()
 				}
@@ -426,10 +430,12 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 			savedValue, _ = getIndexFromStartDate(device, measure.JsonKey, &startOfMonthDate)
 			log.Debugf("month index for %s is %d", device.Id, savedValue)
 			if (savedValue != 0) {
+				log.Debugf("publish %s on %s", strconv.Itoa(savedValue), topic + "/month")
 				token := c.Publish(topic + "/month", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
 				token.Wait()
 
 				if (currentPrice > 0.0) {
+					log.Debugf("publish %s on %s", strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64), topic + "/price/month")
 					token := c.Publish(topic + "/price/month", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64))
 					token.Wait()
 				}
@@ -438,10 +444,12 @@ func publishOnMQTT(device *EcoDevices, measures []EcoDevicesMeasure, ecoDevicesR
 			savedValue, _ = getIndexFromStartDate(device, measure.JsonKey, &startOfYearDate)
 			log.Debugf("year index for %s is %d", device.Id, savedValue)
 			if (savedValue != 0) {
+				log.Debugf("publish %s on %s", strconv.Itoa(savedValue), topic + "/year")
 				token := c.Publish(topic + "/year", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.Itoa(savedValue))
 				token.Wait()
 
 				if (currentPrice > 0.0) {
+					log.Debugf("publish %s on %s", strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64), topic + "/price/year")
 					token := c.Publish(topic + "/price/year", byte(measure.MQTTQoS), measure.MQTTRetained, strconv.FormatFloat((float64(savedValue) / float64(1000)) * currentPrice, 'f', 2, 64))
 					token.Wait()
 				}
