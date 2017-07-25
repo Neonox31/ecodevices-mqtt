@@ -8,6 +8,3 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /srv/docker/ecodevices-mqtt:/config
     command: bash -c "go get github.com/neonox31/ecodevices-mqtt && exec ecodevices-mqtt --config /config/app.toml"
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
